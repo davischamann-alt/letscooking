@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Let's Cooking</title>
+  <meta name="description" content="Type a craving, get recipes, rate what you cook, and get better ideas over time.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍳</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#cravings">🍳 Let's Cooking</a>
+    <nav id="nav" aria-label="Main">
+      <a href="#cravings" data-tab="cravings">Cravings</a>
+      <a href="#foryou" data-tab="foryou">For You</a>
+      <a href="#cookbook" data-tab="cookbook">Cookbook</a>
+      <a href="#help" data-tab="help">How it works</a>
+    </nav>
+  </header>
+
+  <main id="app" tabindex="-1"></main>
+
+  <footer class="foot">
+    Recipes from <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>.
+    Your ratings and notes stay in this browser.
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
