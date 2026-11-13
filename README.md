@@ -8,6 +8,10 @@ visitor's own browser (`localStorage`), so there is no server, account or databa
 
 Usage instructions live inside the site under **How it works**.
 
+Optionally, a visitor can paste their own free [Spoonacular](https://spoonacular.com/food-api) API key
+under **Cookbook → More recipes** to search a much larger collection. The key is saved only in that
+visitor's browser — never put a key in this repository, which is public.
+
 ## Put it online with GitHub Pages
 
 1. On GitHub, open this repository → **Settings** → **Pages**.

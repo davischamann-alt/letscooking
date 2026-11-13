@@ -111,7 +111,7 @@ button, input, textarea { font: inherit; color: inherit; }
 .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 
 .search { display: flex; gap: .5rem; margin: 1rem 0 .75rem; }
-.search input {
+.search input, .key-input {
   flex: 1; min-width: 0; padding: .75rem 1rem; font-size: 1.05rem;
   border: 1.5px solid var(--line); border-radius: var(--radius); background: var(--card);
   box-shadow: inset 0 2px 4px rgba(74, 48, 32, .08);

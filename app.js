@@ -104,8 +104,111 @@
     return meal;
   }
 
+  // ---------- Spoonacular (optional; uses a key the visitor pastes in) ----------
+
+  const SPOON = 'https://api.spoonacular.com/recipes/';
+  const SPOON_KEY = 'letscooking.spoonKey';     // kept apart from the store so backups never contain it
+  const SPOON_CACHE = 'letscooking.spoonCache'; // recently seen recipes, to spare the daily quota
+  const SPOON_OPTS = { addRecipeInformation: 'true', instructionsRequired: 'true' };
+  let spoonQuota = null;  // points left today, as last reported by the API
+  let spoonWarning = '';  // shown under the search box when Spoonacular had a problem
+
+  const getKey = () => { try { return localStorage.getItem(SPOON_KEY) || ''; } catch { return ''; } };
+
+  try {
+    for (const meal of Object.values(JSON.parse(localStorage.getItem(SPOON_CACHE)) || {})) mealCache.set(meal.id, meal);
+  } catch { /* no cache yet */ }
+
+  function rememberSpoonMeals() {
+    try {
+      const recent = [...mealCache.values()].filter((m) => m.id.startsWith('s')).slice(-60);
+      localStorage.setItem(SPOON_CACHE, JSON.stringify(Object.fromEntries(recent.map((m) => [m.id, m]))));
+    } catch { /* cache is a nicety */ }
+  }
+
+  async function spoon(path, key = getKey()) {
+    const res = await fetch(SPOON + path, { headers: { 'x-api-key': key } });
+    const left = res.headers.get('X-Api-Quota-Left');
+    if (left != null && left !== '') spoonQuota = Number(left);
+    if (res.status === 401 || res.status === 403) throw new Error('Spoonacular didn’t accept the API key.');
+    if (res.status === 402) throw new Error('Today’s free Spoonacular allowance is used up — it resets daily.');
+    if (res.status === 429) throw new Error('Spoonacular is asking us to slow down — try again in a minute.');
+    if (!res.ok) throw new Error('Spoonacular returned ' + res.status);
+    return res.json();
+  }
+
+  const htmlToText = (html) => new DOMParser().parseFromString(String(html || ''), 'text/html').body.textContent || '';
+
+  function normalizeSpoon(r) {
+    const steps = (r.analyzedInstructions || []).flatMap((s) => s.steps || []).map((s) => s.step).filter(Boolean);
+    const meal = {
+      id: 's' + r.id,
+      name: r.title || 'Untitled recipe',
+      thumb: httpUrl(r.image),
+      category: '',
+      // Prefer a specific cuisine ("Italian") over a broad one listed first ("Mediterranean").
+      area: areaName((r.cuisines || []).find((c) => findArea(c)) || (r.cuisines || [])[0] || ''),
+      ingredients: (r.extendedIngredients || [])
+        .map((i) => ({
+          name: i.nameClean || i.name || '',
+          measure: [i.amount ? String(Math.round(i.amount * 100) / 100) : '', i.unit || ''].filter(Boolean).join(' '),
+        }))
+        .filter((i) => i.name),
+      instructions: steps.length ? steps.join('\n') : htmlToText(r.instructions),
+      source: httpUrl(r.sourceUrl),
+      youtube: '',
+      minutes: r.readyInMinutes || null,
+      servings: r.servings || null,
+      full: true,
+    };
+    // Ingredient searches come back without ingredient lists; those get filled in when the recipe is opened.
+    if (!meal.ingredients.length) meal.partial = true;
+    mealCache.set(meal.id, meal);
+    return meal;
+  }
+
+  async function spoonSearch(query, params) {
+    // Asking for ingredient lists together with includeIngredients makes Spoonacular return nothing.
+    const fill = params.includeIngredients ? {} : { fillIngredients: 'true' };
+    const data = await spoon('complexSearch?' + new URLSearchParams({ ...SPOON_OPTS, ...fill, ...params }));
+    const meals = (data.results || []).map(normalizeSpoon);
+    rememberSpoonMeals();
+    return meals;
+  }
+
+  // Turn a craving into Spoonacular's terms: cuisines, then either a dish name or a list of ingredients.
+  function spoonParams(query) {
+    const cuisines = [];
+    const phrases = splitPhrases(query).map((p) => p.split(' ').filter((word) => {
+      const area = findArea(word) || findArea(word.replace(/s$/, ''));
+      if (area) cuisines.push(area.area);
+      return !area;
+    }).join(' ')).filter(Boolean);
+    const params = { number: '12' };
+    if (cuisines.length) params.cuisine = cuisines.join(',');
+    if (phrases.length > 1) params.includeIngredients = phrases.join(',');
+    else if (phrases.length) params.query = phrases[0];
+    return cuisines.length || phrases.length ? params : null;
+  }
+
+  async function getSpoonMeal(id) {
+    const kept = store.saved[id] || store.cooked.find((c) => c.id === id)?.meal;
+    if (kept) return kept;
+    const partial = mealCache.get(id);
+    try {
+      if (!getKey()) throw new Error('This recipe comes from Spoonacular — add your API key in the Cookbook to open it.');
+      const meal = normalizeSpoon(await spoon(encodeURIComponent(id.slice(1)) + '/information'));
+      rememberSpoonMeals();
+      return meal;
+    } catch (err) {
+      if (partial) return partial; // better the method without ingredients than nothing
+      throw err;
+    }
+  }
+
   async function getMeal(id) {
-    if (mealCache.has(id)) return mealCache.get(id);
+    if (mealCache.has(id) && !mealCache.get(id).partial) return mealCache.get(id);
+    if (id.startsWith('s')) return getSpoonMeal(id);
     try {
       const [meal] = await api('lookup.php?i=' + encodeURIComponent(id));
       if (meal) return meal;
@@ -188,10 +291,12 @@
     return list.find((x) => x.toLowerCase() === text.toLowerCase() || x.toLowerCase() === t) || '';
   };
 
+  const splitPhrases = (query) => query.toLowerCase().split(/[,;+&]|\band\b|\bwith\b|\bor\b/)
+    .map((p) => p.split(/\s+/).filter((word) => word && !STOPWORDS.has(word)).join(' '))
+    .filter(Boolean);
+
   function parseTerms(query) {
-    const phrases = query.toLowerCase().split(/[,;+&]|\band\b|\bwith\b|\bor\b/)
-      .map((p) => p.split(/\s+/).filter((word) => word && !STOPWORDS.has(word)).join(' '))
-      .filter(Boolean);
+    const phrases = splitPhrases(query);
     const texts = new Set(phrases);
     // "spicy chicken curry" should also try each word on its own.
     for (const p of phrases) if (p.includes(' ')) p.split(' ').forEach((word) => texts.add(word));
@@ -213,8 +318,14 @@
       if (t.category) jobs.push({ t, path: 'filter.php?c=' + encodeURIComponent(t.category) });
       if (t.area) jobs.push({ t, path: 'filter.php?a=' + areaQuery(t.area) });
     }
+    spoonWarning = '';
+    const params = getKey() && spoonParams(query);
+    const spoonJob = params
+      ? spoonSearch(query, params).catch((err) => { spoonWarning = err.message; return []; })
+      : Promise.resolve([]);
     const results = await Promise.allSettled(jobs.map((j) => api(j.path)));
-    if (results.every((r) => r.status === 'rejected')) throw results[0].reason;
+    const spoonMeals = await spoonJob;
+    if (!spoonMeals.length && results.every((r) => r.status === 'rejected')) throw results[0].reason;
 
     const found = new Map();
     results.forEach((r, i) => {
@@ -226,6 +337,9 @@
         found.set(meal.id, entry);
       }
     });
+
+    // Spoonacular already matched the whole craving, so its results count as full matches.
+    for (const meal of spoonMeals) found.set(meal.id, { meal, terms: new Set(terms.map((t) => t.text)) });
 
     const profile = buildProfile();
     return [...found.values()]
@@ -271,6 +385,21 @@
       if (comfort) score -= Math.max(0, Math.abs(meal.ingredients.length - comfort) - 3) * 0.5;
       picks.push({ meal, score, why: shortlist[i].why });
     });
+    if (getKey() && sources.length) {
+      const likedAreas = topKeys(profile, 'a:', 2).map((k) => k.name);
+      const likedIng = topKeys(profile, 'i:', 1).map((k) => k.name);
+      const params = { number: '6', sort: 'random' };
+      if (likedAreas.length) params.cuisine = likedAreas.join(',');
+      else if (likedIng.length) params.includeIngredients = likedIng[0];
+      try {
+        for (const meal of await spoonSearch('', params)) {
+          if (cooked.has(meal.id) || picks.some((p) => p.meal.id === meal.id)) continue;
+          let score = affinity(meal, profile);
+          if (comfort) score -= Math.max(0, Math.abs(meal.ingredients.length - comfort) - 3) * 0.5;
+          picks.push({ meal, score, why: likedAreas.length ? `You like ${meal.area || likedAreas[0]} food` : `Uses ${likedIng[0]}` });
+        }
+      } catch { /* suggestions still work from TheMealDB alone */ }
+    }
     picks.sort((a, b) => b.score - a.score);
 
     const fresh = (await Promise.allSettled([0, 1, 2, 3].map(() => api('random.php'))))
@@ -288,7 +417,7 @@
       .sort((a, b) => a.date.localeCompare(b.date))
       .slice(0, 4);
 
-    return { picks: picks.slice(0, 8), fresh, makeAgain, learned: sources.length > 0 };
+    return { picks: picks.slice(0, 10), fresh, makeAgain, learned: sources.length > 0 };
   }
 
   // ---------- DOM helpers ----------
@@ -313,7 +442,7 @@
 
   function card(meal, why) {
     const review = lastReview(meal.id);
-    const sub = [meal.category, meal.area].filter((x) => x && x !== 'Unknown').join(' · ');
+    const sub = [meal.category, meal.area, meal.minutes && meal.minutes + ' min'].filter((x) => x && x !== 'Unknown').join(' · ');
     return h('a', { class: 'card', href: '#recipe/' + meal.id },
       meal.thumb && h('img', { src: meal.thumb, alt: '', loading: 'lazy' }),
       h('div', { class: 'body' },
@@ -368,10 +497,12 @@
       if (search.busy) out.append(loading('Finding recipes…'));
       else if (search.error) out.append(errorBox(search.error, () => run(search.query)));
       else if (search.results && !search.results.length) {
+        if (spoonWarning) out.append(h('div', { class: 'notice error' }, spoonWarning));
         out.append(h('div', { class: 'notice' },
           h('p', {}, `Nothing found for “${search.query}”.`),
           h('p', { class: 'muted small' }, 'Try a single ingredient (chicken, rice), a dish name (lasagne), or a cuisine (Thai).')));
       } else if (search.results) {
+        if (spoonWarning) out.append(h('div', { class: 'notice error' }, spoonWarning, ' Showing TheMealDB results only.'));
         out.append(h('p', { class: 'muted small' }, `${search.results.length} recipes for “${search.query}” — best matches first.`),
           grid(search.results.map((m) => card(m))));
       } else {
@@ -473,6 +604,8 @@
         c.notes && h('p', { class: 'small' }, c.notes)))));
     }
 
+    app.append(h('h2', {}, 'More recipes (optional)'), spoonSettings());
+
     // Backup
     const fileInput = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: importData });
     app.append(h('h2', {}, 'Backup'),
@@ -482,6 +615,51 @@
         h('button', { class: 'btn', onclick: () => fileInput.click() }, 'Import a backup'),
         h('button', { class: 'btn danger', onclick: resetData }, 'Erase everything'),
         fileInput));
+  }
+
+  function spoonSettings() {
+    const input = h('input', {
+      type: 'password', class: 'key-input', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'Paste your Spoonacular API key', 'aria-label': 'Spoonacular API key',
+    });
+    const status = h('p', { class: 'small', role: 'status' });
+    const removeBtn = h('button', { class: 'btn danger', type: 'button', onclick: () => {
+      try { localStorage.removeItem(SPOON_KEY); } catch { /* nothing to remove */ }
+      recsCache = null;
+      paint('Key removed from this browser.');
+    } }, 'Remove key');
+
+    const paint = (message) => {
+      const key = getKey();
+      removeBtn.hidden = !key;
+      status.textContent = message || (key
+        ? `A key is saved in this browser (ending …${key.slice(-4)}). Searches and For You now include Spoonacular.`
+        : 'No key saved — recipes come from TheMealDB only.');
+    };
+    paint();
+
+    return h('form', { class: 'panel', onsubmit: async (e) => {
+      e.preventDefault();
+      const key = input.value.trim();
+      if (!key) { paint('Paste your key into the box first.'); return; }
+      status.textContent = 'Checking the key with Spoonacular…';
+      try {
+        await spoon('complexSearch?query=pasta&number=1', key);
+      } catch (err) {
+        // A used-up allowance still means the key itself is valid.
+        if (!/allowance/.test(err.message)) { paint(err.message + ' Nothing was saved.'); return; }
+      }
+      try { localStorage.setItem(SPOON_KEY, key); } catch { paint('Your browser blocked saving the key.'); return; }
+      input.value = '';
+      recsCache = null;
+      paint('Key works and is saved in this browser.' + (spoonQuota != null ? ` About ${Math.floor(spoonQuota)} points left today.` : ''));
+    } },
+      h('p', {}, 'Add a free ', h('a', { href: 'https://spoonacular.com/food-api', target: '_blank', rel: 'noopener' }, 'Spoonacular'),
+        ' API key and your searches and For You ideas also pull from its much larger recipe collection, with cooking times.'),
+      h('div', { class: 'search' }, input, h('button', { class: 'btn primary', type: 'submit' }, 'Save & test')),
+      status,
+      h('div', { class: 'row' }, removeBtn),
+      h('p', { class: 'muted small' }, 'The key is stored only in this browser: it isn’t uploaded anywhere, isn’t included in backups, and each device or friend needs their own. A free key covers roughly 25 searches a day; when it runs out the site carries on with TheMealDB.'));
   }
 
   function exportData() {
@@ -595,7 +773,7 @@
         h('div', {},
           h('h1', {}, meal.name),
           sub && h('p', { class: 'muted' }, sub),
-          h('p', { class: 'muted small' }, `${meal.ingredients.length} ingredients`),
+          h('p', { class: 'muted small' }, [`${meal.ingredients.length} ingredients`, meal.minutes && `${meal.minutes} min`, meal.servings && `serves ${meal.servings}`].filter(Boolean).join(' · ')),
           h('div', { class: 'row', style: 'margin-top:1rem' },
             saveBtn,
             h('a', { class: 'btn primary', href: '#review', onclick: (e) => {
@@ -607,10 +785,13 @@
       history,
       h('h2', {}, 'Ingredients'),
       h('p', { class: 'muted small' }, 'Tick things off as you gather them.'),
-      h('ul', { class: 'ingredients' }, meal.ingredients.map((ing) => h('li', {},
+      !meal.ingredients.length && h('p', { class: 'notice' }, 'The ingredient list couldn’t be loaded — use the “Original recipe” button above.'),
+      meal.ingredients.length > 0 && h('ul', { class: 'ingredients' }, meal.ingredients.map((ing) => h('li', {},
         h('label', {}, h('input', { type: 'checkbox' }), h('span', {}, [ing.measure, ing.name].filter(Boolean).join(' ')))))),
       h('h2', {}, 'Method'),
-      h('ol', { class: 'steps' }, splitSteps(meal.instructions).map((s) => h('li', {}, s))),
+      meal.instructions.trim()
+        ? h('ol', { class: 'steps' }, splitSteps(meal.instructions).map((s) => h('li', {}, s)))
+        : h('p', { class: 'muted' }, 'No written method for this one — use the “Original recipe” button above.'),
       reviewForm(meal, paintHistory));
   }
 
@@ -684,6 +865,15 @@
         h('li', {}, h('strong', {}, 'Difficulty feedback '), 'sets your level. Lots of “too hard” → simpler recipes with fewer ingredients. Lots of “too easy” → more involved ones.'),
         h('li', {}, 'Recipes you’ve already cooked aren’t suggested as new — the ones you loved show under “Worth making again”.'),
         h('li', {}, 'See what it has worked out so far under “Your cooking profile” in the ', h('a', { href: '#cookbook' }, 'Cookbook'), '.')),
+
+      h('h2', {}, 'More recipes with Spoonacular (optional)'),
+      h('ul', {},
+        h('li', {}, 'Out of the box, recipes come from TheMealDB, which needs no setup.'),
+        h('li', {}, 'For a much bigger collection, get a free API key at ',
+          h('a', { href: 'https://spoonacular.com/food-api', target: '_blank', rel: 'noopener' }, 'spoonacular.com/food-api'),
+          ', then paste it under “More recipes” in the ', h('a', { href: '#cookbook' }, 'Cookbook'), ' and press “Save & test”.'),
+        h('li', {}, 'The key stays in your browser only. Each device needs it entered once, and friends need their own key (or they just use TheMealDB).'),
+        h('li', {}, 'A free key allows roughly 25 searches a day. If it runs out, the site says so and keeps working with TheMealDB until the next day.')),
 
       h('h2', {}, 'Good to know'),
       h('ul', {},
