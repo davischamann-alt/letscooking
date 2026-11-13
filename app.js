@@ -9,6 +9,7 @@
 
   const CATEGORIES = ['Beef', 'Breakfast', 'Chicken', 'Dessert', 'Goat', 'Lamb', 'Miscellaneous',
     'Pasta', 'Pork', 'Seafood', 'Side', 'Starter', 'Vegan', 'Vegetarian'];
+  // Fallback cuisine list; the live list (with country names) is loaded from the API on first use.
   const AREAS = ['American', 'British', 'Canadian', 'Chinese', 'Croatian', 'Dutch', 'Egyptian',
     'Filipino', 'French', 'Greek', 'Indian', 'Irish', 'Italian', 'Jamaican', 'Japanese', 'Kenyan',
     'Malaysian', 'Mexican', 'Moroccan', 'Polish', 'Portuguese', 'Russian', 'Spanish', 'Thai',
@@ -49,7 +50,30 @@
 
   const mealCache = new Map();
 
+  // The API lists cuisines as {demonym, country} ("Indian" / "India"). Recipes and filters
+  // are only reliable with the country name, so we show the demonym and query the country.
+  let areas = AREAS.map((area) => ({ area, country: '' }));
+  let areasReady = null;
+  function loadAreas() {
+    areasReady ||= fetch(API + 'list.php?a=list')
+      .then((res) => res.json())
+      .then((data) => {
+        const list = (data.meals || []).filter((x) => x.strArea && x.strCountry)
+          .map((x) => ({ area: x.strArea, country: x.strCountry }));
+        if (list.length) areas = list;
+      })
+      .catch(() => { areasReady = null; }); // keep the fallback list, retry next time
+    return areasReady;
+  }
+  const findArea = (text) => {
+    const t = String(text).toLowerCase();
+    return areas.find((x) => x.area.toLowerCase() === t || x.country.toLowerCase() === t);
+  };
+  const areaName = (text) => findArea(text)?.area || text || '';
+  const areaQuery = (name) => encodeURIComponent(findArea(name)?.country || name);
+
   async function api(path) {
+    await loadAreas();
     const res = await fetch(API + path);
     if (!res.ok) throw new Error('Recipe service returned ' + res.status);
     const data = await res.json();
@@ -69,7 +93,7 @@
       name: m.strMeal || 'Untitled recipe',
       thumb: httpUrl(m.strMealThumb),
       category: m.strCategory || '',
-      area: m.strArea || '',
+      area: areaName(m.strArea),
       ingredients,
       instructions: m.strInstructions || '',
       source: httpUrl(m.strSource),
@@ -174,11 +198,12 @@
     return [...texts].slice(0, 6).map((text) => ({
       text,
       category: matchName(CATEGORIES, text),
-      area: matchName(AREAS, text),
+      area: findArea(text)?.area || findArea(text.replace(/s$/, ''))?.area || '',
     }));
   }
 
   async function searchMeals(query) {
+    await loadAreas(); // cuisine names must be known before the craving is parsed
     const terms = parseTerms(query);
     if (!terms.length) return [];
     const jobs = [];
@@ -186,7 +211,7 @@
       jobs.push({ t, path: 'search.php?s=' + encodeURIComponent(t.text) });
       jobs.push({ t, path: 'filter.php?i=' + encodeURIComponent(t.text.replace(/ /g, '_')) });
       if (t.category) jobs.push({ t, path: 'filter.php?c=' + encodeURIComponent(t.category) });
-      if (t.area) jobs.push({ t, path: 'filter.php?a=' + encodeURIComponent(t.area) });
+      if (t.area) jobs.push({ t, path: 'filter.php?a=' + areaQuery(t.area) });
     }
     const results = await Promise.allSettled(jobs.map((j) => api(j.path)));
     if (results.every((r) => r.status === 'rejected')) throw results[0].reason;
@@ -213,10 +238,11 @@
   // ---------- Recommendations ----------
 
   async function buildRecommendations() {
+    await loadAreas();
     const profile = buildProfile();
     const cooked = cookedIds();
     const sources = [
-      ...topKeys(profile, 'a:', 2).map((k) => ({ ...k, path: 'filter.php?a=' + encodeURIComponent(k.name), why: `You like ${k.name} food` })),
+      ...topKeys(profile, 'a:', 2).map((k) => ({ ...k, path: 'filter.php?a=' + areaQuery(k.name), why: `You like ${k.name} food` })),
       ...topKeys(profile, 'c:', 2).map((k) => ({ ...k, path: 'filter.php?c=' + encodeURIComponent(k.name), why: `You like ${k.name.toLowerCase()} dishes` })),
       ...topKeys(profile, 'i:', 3).map((k) => ({ ...k, path: 'filter.php?i=' + encodeURIComponent(k.name.replace(/ /g, '_')), why: `Uses ${k.name}` })),
     ];
