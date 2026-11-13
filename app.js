@@ -55,7 +55,7 @@
   let areas = AREAS.map((area) => ({ area, country: '' }));
   let areasReady = null;
   function loadAreas() {
-    areasReady ||= fetch(API + 'list.php?a=list')
+    if (!areasReady) areasReady = fetch(API + 'list.php?a=list')
       .then((res) => res.json())
       .then((data) => {
         const list = (data.meals || []).filter((x) => x.strArea && x.strCountry)
@@ -179,7 +179,7 @@
   }
 
   const cookedIds = () => new Set(store.cooked.map((c) => c.id));
-  const lastReview = (id) => store.cooked.filter((c) => c.id === id).at(-1);
+  const lastReview = (id) => store.cooked.filter((c) => c.id === id).slice(-1)[0];
 
   // ---------- Search ----------
 
@@ -351,7 +351,7 @@
       const token = renderToken;
       try {
         search.results = await searchMeals(query);
-        if (store.searches.at(-1)?.q !== query) {
+        if (store.searches.slice(-1)[0]?.q !== query) {
           store.searches.push({ q: query, date: new Date().toISOString() });
           store.searches = store.searches.slice(-100);
           saveStore();
@@ -530,7 +530,7 @@
       .map((s) => s.replace(/^(step\s*)?\d+[.):]\s+/i, ''));
     // Some recipes arrive as one big paragraph — break those into sentences.
     if (lines.length <= 2 && text.length > 400) {
-      return lines.flatMap((l) => l.split(/(?<=[.!?])\s+(?=[A-Z])/)).filter(Boolean);
+      return lines.flatMap((l) => l.replace(/([.!?])\s+(?=[A-Z])/g, '$1\n').split('\n')).filter(Boolean);
     }
     return lines.length ? lines : [text];
   }
